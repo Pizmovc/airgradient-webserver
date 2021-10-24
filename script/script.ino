@@ -29,6 +29,7 @@ MIT License
 #include <WiFiManager.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
+#include <ESP8266WebServer.h>
 
 #include <Wire.h>
 #include "SSD1306Wire.h"
@@ -37,19 +38,15 @@ AirGradient ag = AirGradient();
 
 SSD1306Wire display(0x3c, SDA, SCL);
 
+ESP8266WebServer server(80);
+
 // set sensors that you do not use to false
 boolean hasPM=true;
 boolean hasCO2=true;
 boolean hasSHT=true;
 
 // set to true if you want to connect to wifi. The display will show values only when the sensor has wifi connection
-boolean connectWIFI=false;
-
-// change if you want to send the data to another server
-String APIROOT = "http://hw.airgradient.com/";
-
-// Time display each screen
-int delayTime = 1500;
+boolean connectWIFI=true;
 
 void setup(){
   Serial.begin(9600);
@@ -62,57 +59,59 @@ void setup(){
   if (hasCO2) ag.CO2_Init();
   if (hasSHT) ag.TMP_RH_Init(0x44);
 
-  if (connectWIFI) connectToWifi();
+  if (connectWIFI) {
+    connectToWifi();
+    setupWebServer();
+  }
   delay(2000);
 }
 
+String payload;
+int wifi = -1;
+int pm2 = -1;
+int co2 = -1;
+int temp = -1;
+int hum = -1;
+
 void loop(){
-
-  // create payload
-
-  String payload = "{\"wifi\":" + String(WiFi.RSSI()) + ",";
+  wifi = WiFi.RSSI();
 
   if (hasPM) {
-    int PM2 = ag.getPM2_Raw();
-    payload=payload+"\"pm02\":" + String(PM2);
-    showTextRectangle("PM2",String(PM2),false);
-    delay(delayTime);
+    pm2 = ag.getPM2_Raw();
   }
 
   if (hasCO2) {
-    if (hasPM) payload=payload+",";
-    int CO2 = ag.getCO2_Raw();
-    payload=payload+"\"rco2\":" + String(CO2);
-    showTextRectangle("CO2",String(CO2),false);
-    delay(delayTime);
+    co2 = ag.getCO2_Raw();
   }
 
   if (hasSHT) {
-    if (hasCO2 || hasPM) payload=payload+",";
     TMP_RH result = ag.periodicFetchData();
-    payload=payload+"\"atmp\":" + String(result.t) +   ",\"rhum\":" + String(result.rh);
-    showTextRectangle("HUM",String(result.rh)+"%",false);
-    delay(delayTime);
-    showTextRectangle("TEM",String(result.t),false);
-    delay(delayTime);
+    temp = (int)(result.t * 10);
+    hum = result.rh;
   }
 
-   payload=payload+"}";
+  displayField("PM2", pm2);
+  displayField("CO2", co2);
+  displayField("TEM", temp);
+  displayField("HUM", hum);
+}
 
-  // send payload
+void displayField(String name, int value) {
+  String displayValue = String(value);
+  if (name == "TEM") {
+    displayValue = String((float)value / 10);
+  }
+  showTextRectangle(name, displayValue, false);
+
+  for(int i = 0; i < 15; i++) {
+    delay(100);
+    handleClient();
+  }
+}
+
+void handleClient() {
   if (connectWIFI){
-    Serial.println(payload);
-    String POSTURL = APIROOT + "sensors/airgradient:" + String(ESP.getChipId(),HEX) + "/measures";
-    Serial.println(POSTURL);
-    WiFiClient client;
-    HTTPClient http;
-    http.begin(client, POSTURL);
-    http.addHeader("content-type", "application/json");
-    int httpCode = http.POST(payload);
-    String response = http.getString();
-    Serial.println(httpCode);
-    Serial.println(response);
-    http.end();
+    server.handleClient();
   }
 }
 
@@ -133,14 +132,68 @@ void showTextRectangle(String ln1, String ln2, boolean small) {
 // Wifi Manager
 void connectToWifi(){
   WiFiManager wifiManager;
+  WiFiManagerParameter custom_hostname("hostname", "desired device hostname", "luft-ena", 40);
+  wifiManager.addParameter(&custom_hostname);
   //WiFi.disconnect(); //to delete previous saved hotspot
   String HOTSPOT = "AIRGRADIENT-"+String(ESP.getChipId(),HEX);
   wifiManager.setTimeout(120);
-  if(!wifiManager.autoConnect((const char*)HOTSPOT.c_str())) {
+  if(!wifiManager.autoConnect((const char*)HOTSPOT.c_str(), "qwerty12345")) {
       Serial.println("failed to connect and hit timeout");
       delay(3000);
       ESP.restart();
       delay(5000);
   }
-
+  wifiManager.setHostname(custom_hostname.getValue());
 }
+
+String getPayload() {
+  String payload = "{";
+  payload += getField("wifi", wifi) + ",";
+  payload += getField("pm2", pm2) + ",";
+  payload += getField("co2", co2) + ",";
+  payload += getField("temperature", temp) + ",";
+  payload += getField("humidity", hum) + "}";
+
+  return payload;
+}
+
+String getField(String name, int value) {
+  String castValue = String(value);
+  if (name == "temperature") {
+    castValue = String((float)value / 10);
+  }
+
+  return "\"" + name + "\":" + castValue;
+}
+
+void setupWebServer(){
+  server.on("/api", []() {
+    server.send(200, "application/json", getPayload());
+  });
+  server.on("/", []() {
+    server.send(200, "text/html;charset=UTF-8", getHTML());
+  });
+  server.begin();
+}
+
+String getTableRow(String name, int value, String unit) {
+  String displayValue = String(value);
+  if (name == "Temperature") {
+    displayValue = String((float)value / 10);
+  }
+  return "<tr><td>" + name + "</td><td>" + displayValue + "</td><td>" + unit + "</td></tr>";
+}
+
+String getHTML() {
+  String html = "<!DOCTYPE html>";
+  html += "<head> <style> body { font-size: 1.5rem; } table { font-family: arial, sans-serif; border-collapse: collapse; width: 100%; } td, th { border: 1px solid #dddddd; text-align: left; padding: 8px; } tr:nth-child(even) { background-color: #dddddd; } </style> </head> ";
+  html += "<body><table>";
+  html += getTableRow("Particulate matter 2.5", pm2, "μg/m3");
+  html += getTableRow("CO2", co2, " ppm");
+  html += getTableRow("Temperature", temp, "°C");
+  html += getTableRow("Humidity", hum, " %");
+  html += "</table></body></html>";
+
+  return html;
+}
+
