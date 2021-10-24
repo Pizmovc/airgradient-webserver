@@ -173,6 +173,9 @@ void setupWebServer(){
   server.on("/", []() {
     server.send(200, "text/html;charset=UTF-8", getHTML());
   });
+  server.on("/metrics", []() {
+    server.send(200, "text/plain;charset=UTF-8", getMetrics());
+  });
   server.begin();
 }
 
@@ -197,3 +200,30 @@ String getHTML() {
   return html;
 }
 
+String getMetrics() {
+  String response = "";
+  response += "\n# HELP instance The ID of the AirGradient sensor.";
+  response += "\n# instance luft-ena";
+  response += "\n";
+  response += "\n# HELP wifi Current WiFi signal strength, in dB";
+  response += "\n# TYPE wifi gauge";
+  response += "\nwifi " + String(wifi);
+  response += "\n";
+  response += "\n# HELP pm2 Particulat Matter PM2.5 value, in μg/m3";
+  response += "\n# TYPE pm2 gauge";
+  response += "\npm2 " + String(pm2);
+  response += "\n";
+  response += "\n# HELP co2 CO2 value, in ppm";
+  response += "\n# TYPE co2 gauge";
+  response += "\nco2 " + String(co2);
+  response += "\n";
+  response += "\n# HELP temp Temperature, in degrees Celsius";
+  response += "\n# TYPE temp gauge";
+  response += "\ntemp " + String((float)temp / 10);
+  response += "\n";
+  response += "\n# HELP hum Relative humidity, in percent";
+  response += "\n# TYPE hum gauge";
+  response += "\nhum " + String(hum);
+
+  return response;
+}
