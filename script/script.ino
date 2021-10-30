@@ -1,26 +1,13 @@
 /*
 This is the code for the AirGradient DIY Air Quality Sensor with an ESP8266 Microcontroller.
 
-It is a high quality sensor showing PM2.5, CO2, Temperature and Humidity on a small display and can send data over Wifi.
-
-For build instructions please visit https://www.airgradient.com/diy/
-
-Compatible with the following sensors:
-Plantower PMS5003 (Fine Particle Sensor)
-SenseAir S8 (CO2 Sensor)
-SHT30/31 (Temperature/Humidity Sensor)
-
-Please install ESP8266 board manager (tested with version 3.0.0)
-
 The codes needs the following libraries installed:
-"WifiManager by tzapu, tablatronix" tested with Version 2.0.3-alpha
-"ESP8266 and ESP32 OLED driver for SSD1306 displays by ThingPulse, Fabrice Weinberg" tested with Version 4.1.0
+"AirGradient Air Quality Sensor by AirGradient", tested with version 1.3.5
+"WifiManager by tzapu, tablatronix", tested with version 2.0.4-beta
+"ESP8266 and ESP32 OLED driver for SSD1306 displays by ThingPulse, Fabrice Weinberg", tested with version 4.2.1
 
 Configuration:
-Please set in the code below which sensor you are using and if you want to connect it to WiFi.
-
-If you are a school or university contact us for a free trial on the AirGradient platform.
-https://www.airgradient.com/schools/
+Below are some boolean values that you can set to true/false
 
 MIT License
 */
@@ -40,12 +27,12 @@ SSD1306Wire display(0x3c, SDA, SCL);
 
 ESP8266WebServer server(80);
 
-// set sensors that you do not use to false
+// Set sensors that you do not use to false
 boolean hasPM=true;
 boolean hasCO2=true;
 boolean hasSHT=true;
 
-// set to true if you want to connect to wifi. The display will show values only when the sensor has wifi connection
+// Set to true if you want to connect to wifi
 boolean connectWIFI=true;
 
 void setup(){
@@ -53,7 +40,7 @@ void setup(){
 
   display.init();
   display.flipScreenVertically();
-  showTextRectangle("Init", String(ESP.getChipId(),HEX),true);
+  showTextRectangle("Init", String(ESP.getChipId(),HEX), true);
 
   if (hasPM) ag.PMS_Init();
   if (hasCO2) ag.CO2_Init();
@@ -66,13 +53,14 @@ void setup(){
   delay(2000);
 }
 
-String payload;
+// These hold values
 int wifi = -1;
 int pm2 = -1;
 int co2 = -1;
 int temp = -1;
 int hum = -1;
 
+// Query sensors, display the data on the LCD, handle any web clients
 void loop(){
   wifi = WiFi.RSSI();
 
@@ -86,55 +74,50 @@ void loop(){
 
   if (hasSHT) {
     TMP_RH result = ag.periodicFetchData();
+    // Its nicer working with one value type, so convert to int
+    // ... but we don't want to loose the precision, so we multiply by 10
     temp = (int)(result.t * 10);
     hum = result.rh;
   }
 
   displayField("PM2", pm2);
+  waitAndHandleClients();
+
   displayField("CO2", co2);
+  waitAndHandleClients();
+
   displayField("TEM", temp);
+  waitAndHandleClients();
+
   displayField("HUM", hum);
+  waitAndHandleClients();
 }
 
+// Displays a two line screen with `name` and `value`
 void displayField(String name, int value) {
   String displayValue = String(value);
   if (name == "TEM") {
     displayValue = String((float)value / 10);
   }
   showTextRectangle(name, displayValue, false);
+}
 
-  for(int i = 0; i < 15; i++) {
+// Waits 100ms, handles any clients, waits again, handles any clients, ...
+// This way we get more responsive web server
+void waitAndHandleClients() {
+  for(int i = 0; i < 12; i++) {
     delay(100);
-    handleClient();
+    if (connectWIFI){
+      server.handleClient();
+    }
   }
 }
 
-void handleClient() {
-  if (connectWIFI){
-    server.handleClient();
-  }
-}
 
-// DISPLAY
-void showTextRectangle(String ln1, String ln2, boolean small) {
-  display.clear();
-  display.setTextAlignment(TEXT_ALIGN_LEFT);
-  if (small) {
-    display.setFont(ArialMT_Plain_16);
-  } else {
-    display.setFont(ArialMT_Plain_24);
-  }
-  display.drawString(32, 16, ln1);
-  display.drawString(32, 36, ln2);
-  display.display();
-}
-
-// Wifi Manager
+// Initialize the WiFi
 void connectToWifi(){
   WiFiManager wifiManager;
-  WiFiManagerParameter custom_hostname("hostname", "desired device hostname", "luft-ena", 40);
-  wifiManager.addParameter(&custom_hostname);
-  //WiFi.disconnect(); //to delete previous saved hotspot
+  //WiFi.disconnect(); // to delete previous saved hotspot
   String HOTSPOT = "AIRGRADIENT-"+String(ESP.getChipId(),HEX);
   wifiManager.setTimeout(120);
   if(!wifiManager.autoConnect((const char*)HOTSPOT.c_str(), "qwerty12345")) {
@@ -143,10 +126,30 @@ void connectToWifi(){
       ESP.restart();
       delay(5000);
   }
-  wifiManager.setHostname(custom_hostname.getValue());
 }
 
-String getPayload() {
+// Creates endpoints for the webserver and starts it up
+void setupWebServer(){
+  // Query this endpoint to get JSON with data
+  server.on("/api", []() {
+    server.send(200, "application/json", getJSONData());
+  });
+
+  // Visit this endpoint in the browser to view data in a table
+  server.on("/", []() {
+    server.send(200, "text/html;charset=UTF-8", getHTML());
+  });
+
+  // Prometheus spec metrics API
+  server.on("/metrics", []() {
+    server.send(200, "text/plain;charset=UTF-8", getMetrics());
+  });
+
+  server.begin();
+}
+
+// Creates a JSON string containing all the values
+String getJSONData() {
   String payload = "{";
   payload += getField("wifi", wifi) + ",";
   payload += getField("pm2", pm2) + ",";
@@ -157,6 +160,7 @@ String getPayload() {
   return payload;
 }
 
+// Returns one line of JSON: `"name": value`
 String getField(String name, int value) {
   String castValue = String(value);
   if (name == "temperature") {
@@ -166,27 +170,7 @@ String getField(String name, int value) {
   return "\"" + name + "\":" + castValue;
 }
 
-void setupWebServer(){
-  server.on("/api", []() {
-    server.send(200, "application/json", getPayload());
-  });
-  server.on("/", []() {
-    server.send(200, "text/html;charset=UTF-8", getHTML());
-  });
-  server.on("/metrics", []() {
-    server.send(200, "text/plain;charset=UTF-8", getMetrics());
-  });
-  server.begin();
-}
-
-String getTableRow(String name, int value, String unit) {
-  String displayValue = String(value);
-  if (name == "Temperature") {
-    displayValue = String((float)value / 10);
-  }
-  return "<tr><td>" + name + "</td><td>" + displayValue + "</td><td>" + unit + "</td></tr>";
-}
-
+// Returns a HTML page with a data table
 String getHTML() {
   String html = "<!DOCTYPE html>";
   html += "<head> <style> body { font-size: 1.5rem; } table { font-family: arial, sans-serif; border-collapse: collapse; width: 100%; } td, th { border: 1px solid #dddddd; text-align: left; padding: 8px; } tr:nth-child(even) { background-color: #dddddd; } </style> </head> ";
@@ -200,16 +184,23 @@ String getHTML() {
   return html;
 }
 
+// Returns HTML for one table row
+String getTableRow(String name, int value, String unit) {
+  String displayValue = String(value);
+  if (name == "Temperature") {
+    displayValue = String((float)value / 10);
+  }
+  return "<tr><td>" + name + "</td><td>" + displayValue + "</td><td>" + unit + "</td></tr>";
+}
+
+// Creates Prometheus spec metrics page
 String getMetrics() {
   String response = "";
-  response += "\n# HELP instance The ID of the AirGradient sensor.";
-  response += "\n# instance luft-ena";
-  response += "\n";
   response += "\n# HELP wifi Current WiFi signal strength, in dB";
   response += "\n# TYPE wifi gauge";
   response += "\nwifi " + String(wifi);
   response += "\n";
-  response += "\n# HELP pm2 Particulat Matter PM2.5 value, in μg/m3";
+  response += "\n# HELP pm2 Particulate Matter PM2.5 value, in μg/m3";
   response += "\n# TYPE pm2 gauge";
   response += "\npm2 " + String(pm2);
   response += "\n";
@@ -227,3 +218,18 @@ String getMetrics() {
 
   return response;
 }
+
+// Helper function to show some text on the screen
+void showTextRectangle(String ln1, String ln2, boolean small) {
+  display.clear();
+  display.setTextAlignment(TEXT_ALIGN_LEFT);
+  if (small) {
+    display.setFont(ArialMT_Plain_16);
+  } else {
+    display.setFont(ArialMT_Plain_24);
+  }
+  display.drawString(32, 16, ln1);
+  display.drawString(32, 36, ln2);
+  display.display();
+}
+
